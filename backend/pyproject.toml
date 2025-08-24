@@ -5,10 +5,15 @@ description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.116.1",
+    "httpx>=0.28.1",
     "pydantic>=2.11.7",
     "pydantic-settings>=2.10.1",
     "pytest>=8.4.1",
     "python-language-server>=0.36.2",
     "sqlalchemy>=2.0.43",
     "uvicorn>=0.35.0",
+]
+[tool.pytest.ini_options]
+pythonpath = [
+    ".", "app"
 ]

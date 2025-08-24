@@ -1,90 +1,121 @@
-# app/game_manager.py
+from typing import Dict, List, Optional
+from app.game_logic import Card, create_deck, deal_board, is_set, resolve_round, Game, Player
 
-from game_logic import Game, Card, create_deck, deal_board, resolve_round, Player
-import time
 
 class GameManager:
     def __init__(self):
-        self.game: Game | None = None
-        self.card_lookup: dict[int, Card] = {}
+        self.card_lookup_inv: Dict[Card, int] | None = None
+        self.card_lookup: Dict[int, Card] = {}
+        self.game: Optional[Game] = None
 
-    def new_game(self, player_names: list[str]) -> None:
+        # Lobby / lifecycle
+        self.state: str = "lobby"  # lobby | running | finished
+        self.lobby_players: List[str] = []
+
+    # ----------------------
+    # Helpers
+    # ----------------------
+
+    def _card_to_id(self, card: Card) -> int:
+        """Maps a card to a stable ID (0–80)."""
+        return self.card_lookup_inv[card]
+
+    def _id_to_card(self, cid: int) -> Card:
+        return self.card_lookup[cid]
+
+    # ----------------------
+    # Lobby
+    # ----------------------
+
+    def join_lobby(self, player_name: str) -> None:
+        if self.state != "lobby":
+            raise RuntimeError("Cannot join, game already started")
+
+        if player_name in self.lobby_players:
+            raise ValueError("Player name already taken")
+
+        self.lobby_players.append(player_name)
+
+    def start_game(self) -> None:
+        if self.state != "lobby":
+            raise RuntimeError("Game already started or finished")
+
+        if not self.lobby_players:
+            raise RuntimeError("Cannot start without players")
+
         deck = create_deck()
         self.card_lookup = {i: card for i, card in enumerate(deck)}
+        self.card_lookup_inv = {card: i for i, card in enumerate(deck)}
 
-        # shuffle deck in-place
-        from random import shuffle
-        ids = list(self.card_lookup.keys())
-        shuffle(ids)
+        board = deal_board(deck, 12)
 
-        # map shuffled IDs back to cards
-        shuffled_deck = [self.card_lookup[i] for i in ids]
+        players = {name: Player(name=name) for name in self.lobby_players}
+        self.game = Game(deck=deck, board=board, players=players)
 
-        board = deal_board(shuffled_deck, 12)
-        self.game = Game(
-            deck=shuffled_deck,
-            board=board,
-            players={name: Player.__init__(name) for name in player_names},
-            submissions={},
-            round_number=1,
-            history=[]
-        )
+        self.state = "running"
+        self.lobby_players.clear()
 
-    def get_state(self) -> dict:
-        """Return JSON-serializable game state (board IDs, players, round)."""
+    # ----------------------
+    # State Snapshot
+    # ----------------------
+
+    def get_state(self) -> Dict:
+        """Return a serializable snapshot of the game state."""
         if not self.game:
-            return {}
-
-        board_ids = [self._card_to_id(c) for c in self.game.board]
+            return {"state": self.state, "players": self.lobby_players}
 
         return {
+            "state": self.state,
             "round": self.game.round_number,
-            "board": board_ids,
+            "board": [self._card_to_id(c) for c in self.game.board],
             "players": {
-                name: {"times": pdata["times"]}
-                for name, pdata in self.game.players.items()
+                name: {"times": p.times} for name, p in self.game.players.items()
             },
-            "history": self.game.history,
+            "history": getattr(self.game, "history", []),
         }
 
-    def submit_set(self, player: str, card_ids: list[int], elapsed_time: float) -> bool:
-        """Player submits a set attempt. Returns True if valid, False otherwise."""
-        if not self.game:
+    # ----------------------
+    # Submissions
+    # ----------------------
+
+    def submit_set(self, player: str, card_ids: List[int], elapsed_time: float) -> bool:
+        if not self.game or self.state != "running":
+            return False
+        if player not in self.game.players:
             return False
 
-        cards = [self.card_lookup[cid] for cid in card_ids]
-
-        # validate and store submission
-        from game_logic import is_set
-        if is_set(cards):
-            self.game.submissions[player] = {"cards": cards, "time": elapsed_time}
-            return True
-        else:
+        cards = [self._id_to_card(cid) for cid in card_ids]
+        if not is_set(cards):
             return False
 
-    def try_resolve_round(self) -> str | None:
-        """Check if round is ready to resolve. If so, resolve and return winner."""
-        if not self.game:
+        self.game.submissions[player] = {"cards": cards, "time": elapsed_time}
+        return True
+
+    # ----------------------
+    # Round Resolution
+    # ----------------------
+
+    def try_resolve_round(self) -> Optional[str]:
+        """Only resolves if all players have submitted."""
+        if not self.game or self.state != "running":
             return None
 
-        # all players must have submitted
         if len(self.game.submissions) < len(self.game.players):
             return None
 
         winner = resolve_round(self.game)
 
-        # store history
-        self.game.history.append({
-            "round": self.game.round_number,
-            "winner": winner,
-            "submissions": self.game.submissions.copy(),
-        })
+        # Keep a round history
+        if not hasattr(self.game, "history"):
+            self.game.history = []
+        self.game.history.append(
+            {
+                "round": self.game.round_number - 1,
+                "winner": winner,
+                "submissions": {
+                    p: d["time"] for p, d in self.game.submissions.items()
+                },
+            }
+        )
 
         return winner
-
-    def _card_to_id(self, card: Card) -> int:
-        """Find ID for a given Card (reverse lookup)."""
-        for cid, c in self.card_lookup.items():
-            if c == card:
-                return cid
-        raise ValueError("Card not found in lookup")
