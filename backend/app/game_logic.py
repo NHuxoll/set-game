@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict
 from itertools import product, combinations
-from random import shuffle, random
+from random import shuffle
 
 
 @dataclass(frozen=True)
